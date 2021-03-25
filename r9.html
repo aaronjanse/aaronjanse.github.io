@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+  <title>(WIP) rBSD Tutorial</title>
+	<link href="https://cdn.jsdelivr.net/npm/prismjs@1.21.0/themes/prism-tomorrow.css" rel="stylesheet" />
+  <style>
+    html, body {
+      background-color: #181920;
+    }
+    body {
+      margin-top: -1.5rem;
+    }
+    pre, code {
+        background-color: #181920 !important;
+        color: #f8f8f2 !important;
+    }
+  </style>
+</head>
+<body>
+<pre><code class="language-shell">
+Welcome to WebBSD!
+
+# This is a minimal WebBSD system. It doesn't even have networking setup.
+# Let's explore URLs and their syntax. Then, we'll set things up.
+
+$ ls :
+pci tty
+$ ls tty://
+localhost
+$ ls tty://localhost/
+bash
+$ # Shorter URL syntax is available, but long-form syntax is good for learning.
+$ readlink --canonicalize tty:
+tty://
+$ readlink --canonicalize tty:/
+tty://localhost/
+
+# Did you see tty://localhost/bash?
+# We're connected to that right now. Cool, eh?
+# 
+# Opening the resource at that URL launches a new bash shell. After
+# we setup networking, we'll use tty:// to SSH into other machines.
+# 
+# Now, let's connect to the internet.
+
+================================ 
+=========== Ethernet =========== 
+================================ 
+
+# 1. Find our ethernet card
+$ ls pci://
+localhost
+$ ls pci://localhost/
+by-type/ by-id/ by-uuid/
+$ ls pci://localhost/by-type/
+display/ ethernet/ keyboard/ mouse/ unknown/ wifi/
+$ ls pci://localhost/by-type/ethernet/
+rtl8168
+$ # We can use the `info` command to learn more about a URL.
+$ info pci://localhost/by-type/ethernet/rtl8168
+02:00.0 Ethernet controller: Realtek Semiconductor Co LTD RTL8111/8168/8411
+
+# 2. Setup a network:// interface using the `hw-rtl8168d` driver.
+$ hw-rtl8168d --help
+Driver for Realtek Semiconductor rtl8168.
+Usage: hw-rtl8168d --import pci:&lt;rtl8168&gt; --export network:&lt;domain name&gt;
+$ # The angle brackets don't mean anything; they're just placeholders.
+$ # Let's fill them in.
+$ hw-rtl8168d --import pci://localhost/by-type/ethernet/rtl8168 \
+              --export network://local-ethernet # domain name chosen at random
+
+# 3. Setup more hardware-agnostic protocols using the `translate-net` command.
+$ translate-netd --help
+Daemon to translate [ tcp: udp: ip: ethernet: ] to network: 
+Usage: translate-netd --import network:&lt;domain&gt; \
+                      --export tcp:&lt;domain&gt; udp:&lt;domain&gt; ...
+$ # Shell expansion syntax can help us be concise
+$ echo {ethernet,ip,udp,tcp}://local-ethernet
+ethernet://local-ethernet ip://local-ethernet udp://local-ethernet tcp://local-ethernet 
+$ translate-netd --import network://local-ethernet --export {ethernet,ip,udp,tcp}://local-ethernet 
+
+# 4. Wrap tcp: with socket: so we can use shell utilities that expect a stream
+#    but don't know about the details of tcp: specifically.
+$ translate-tcpd --import tcp://local-ethernet --export +socket://tcp.local-ethernet
+
+# `tcp.local-ethernet` is a regular domain, just like `local-ethernet`.
+# Behind the scenes, `translate-tcpd` does the following translation:
+#     +socket://$subdomains.tcp.local-ethernet -> tcp://$subdomains.local-ethernet
+
+# When we originally created the `local-ethernet` domain, it only supported the
+# network: protocol. We used the `translate-netd` command to make that domain
+# support ethernet:, ip:, udp:, and  tcp:. Behind the scenes, `translate-netd`
+# is translating these new protocols to network://local-ethernet.
+
+# rBSD has three types of protocols:
+#  1. +stream://   - used by tcp://, http://, etc
+#  2. +datagram:// - used by udp://, ntp://, tftp://, etc
+#  3. +block://    - used by file://, disk://, etc
+
+
+================================ 
+===== Explore IP Networking ====
+================================ 
+
+
+# Let's explore the networking setup we have.
+$ ls :
+ethernet ip network pci socket tcp tty udp
+$ info +socket://tcp.local-ethernet
+This is a socket for accessing the internet. It has subdomains to 
+connect to machines at specific IP addresses.
+$ stream-client +socket://93.184.216.34.tcp.local-ethernet \
+                --send 'GET / HTTP/1.1\nHost: example.com\n' \
+                --num-lines-to-read 3
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Age: 517104
+
+
+================================ 
+============== DNS =============
+================================ 
+
+# Awesome! Subdomains are super helpful, and we'll soon see some cool things
+# we can do with them. Now let's setup world-wide web DNS. That's not too hard.
+$ www-dnsd --import ://local-ethernet --export ://www-dns.local-ethernet
+
+# We used the ://domain-name syntax to select that domain for all protocols
+# it implements, both now and in the future. Let's try this out:
+$ stream-client +socket://example.com.www-dns.tcp.local-ethernet \
+                --send 'GET / HTTP/1.1\nHost: example.com\n' \
+                --num-lines-to-read 3
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Age: 517104
+
+# Perfect! Remember that we have our `translate-tcpd` daemon in the background.
+# It translates from +socket://example.com.www-dns.tcp.local-ethernet
+#                 to tcp://example.com.www-dns.local-ethernet
+
+
+
+================================ 
+=========== Clean Up ===========
+================================ 
+
+# Let's setup HTTP. Because it's transport-agnostic,
+# we can use the `passthrough` command to pass http://local-ethernet data
+# to our +socket://tcp host.
+$ passthrough --import +socket://tcp.local-ethernet --export http://tcp.local-ethernet 
+$ curl http://example.com.www-dns.tcp.local-ethernet | head -n 4
+&lt;!doctype html>
+&lt;html>
+&lt;head>
+  &lt;title>Example Domain&lt;/title>
+
+# Awesome! Lastly, let's `chroot` so we don't have to deal with
+# that long domain suffix:
+$ chroot ://www-dns.tcp.local-ethernet
+$ curl http://example.com | head -n 4
+&lt;!doctype html>
+&lt;html>
+&lt;head>
+  &lt;title>Example Domain&lt;/title>
+
+
+
+
+
+<!--
+$ driver-ethernet --import pci://rtl8168d --export network://local-hardware
+$ translate-net --import network://local-hardware --export {ethernet,ip,udp,tcp}://local-hardware
+$ translate-tcp --import tcp://local-hardware --export +stream://tcp
+$ stream-client +stream://93.184.216.34.tcp:80 --send 'GET / HTTP/1.1\nHost: example.com\n'
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Age: 517104
+[...]
+$ translate-passthrough --import +stream://tcp --export {http,ftp}://tcp
+$ network-proto --import tcp://local-hardware --export {http,ftp}://local-hardware
+$ chroot ://local-hardware
+$ curl http://1.1.1.1
+<html> [...]
+$ curl http://example.com
+Host `example.com` not found.
+$ daemon www-dns --domain ://www-dns
+$ curl http://example.com.www-dns
+<html> [...]
+$ chroot {ip,udp,tcp,http}://www-dns
+$ curl http://example.com
+<html> [...]
+$ curl https://example.com
+Host `example.com` does not support protocol `https:`.
+$ daemon tls --import tcp: --export tls://tcp
+$ chroot tls://tcp
+$ network-proto --import tls: --export {https,sftp}://tls
+$ curl https://example.com.tls
+<html> [...]
+$ chroot ://tls
+$ curl https://example.com
+<html> [...]
+$ daemon torsocks5 --domain tcp://tor
+-->
+</code></pre>
+		<script src="https://cdn.jsdelivr.net/npm/prismjs@1.21.0/prism.min.js"></script>
+
+  <script>
+(function (Prism) {
+
+	var string = /('|")(?:\\(?:\r\n|[\s\S])|(?!\1)[^\\\r\n])*\1/;
+
+	Prism.languages.shell = {
+		'class-name': /\n#[^\n]+/,
+		'comment': {
+      'pattern': /\n(.+)(#[^\n]+)/,
+      'lookbehind': true,
+    },
+		// 'atrule': {
+		// 	pattern: /@[\w-]+[\s\S]*?(?:;|(?=\s*\{))/,
+		// 	inside: {
+		// 		'rule': /^@[\w-]+/,
+		// 		'selector-function-argument': {
+		// 			pattern: /(\bselector\s*\((?!\s*\))\s*)(?:[^()]|\((?:[^()]|\([^()]*\))*\))+?(?=\s*\))/,
+		// 			lookbehind: true,
+		// 			alias: 'selector'
+		// 		},
+		// 		'keyword': {
+		// 			pattern: /(^|[^\w-])(?:and|not|only|or)(?![\w-])/,
+		// 			lookbehind: true
+		// 		}
+		// 		// See rest below
+		// 	}
+		// },
+		'url': {
+			// https://drafts.csswg.org/css-values-3/#urls
+			// pattern: RegExp('\\burl\\((?:' + string.source + '|' + /(?:[^\\\r\n()"']|\\[\s\S])*/.source + ')\\)', 'i'),
+			pattern: /[^\d" ](?:[{}A-za-z\+][^:" ]*)?:(?:(?:\<[^\>]+\>)|(?:(?:\/\/)?[A-za-z0-9\/\.-]*(?::\d+)?[\w\n]))/,
+      greedy: true,
+      lookbehind: true,
+			inside: {
+				'function': /^url/i,
+				'punctuation': /^\(|\)$/,
+				'string': {
+					pattern: RegExp('^' + string.source + '$'),
+					alias: 'url'
+				}
+			}
+		},
+    'keyword': /\n\$/,
+		// 'selector': RegExp('[^{}\\s](?:[^{};"\']|' + string.source + ')*?(?=\\s*\\{)'),
+		'string': {
+			pattern: string,
+			greedy: true
+    },
+    'important': /\n=+.*=+/,
+		// 'property': /[-_a-z\xA0-\uFFFF][-\w\xA0-\uFFFF]*(?=\s*:)/i,
+		// 'important': /!important\b/i,
+		// 'function': /[-a-z0-9]+(?=\()/i,
+		// 'punctuation': /[(){};:,]/
+	};
+
+	// Prism.languages.css['atrule'].inside.rest = Prism.languages.css;
+
+	var markup = Prism.languages.markup;
+	if (markup) {
+		markup.tag.addInlined('style', 'css');
+
+		Prism.languages.insertBefore('inside', 'attr-value', {
+			'style-attr': {
+				pattern: /\s*style=("|')(?:\\[\s\S]|(?!\1)[^\\])*\1/i,
+				inside: {
+					'attr-name': {
+						pattern: /^\s*style/i,
+						inside: markup.tag.inside
+					},
+					'punctuation': /^\s*=\s*['"]|['"]\s*$/,
+					'attr-value': {
+						pattern: /.+/i,
+						inside: Prism.languages.css
+					}
+				},
+				alias: 'language-css'
+			}
+		}, markup.tag);
+	}
+
+}(Prism));
+
+  </script>
+</body>
+</html>
