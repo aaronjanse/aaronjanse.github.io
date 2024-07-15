@@ -20,17 +20,16 @@
     <header>
       <div>
         <div id="icon-area">
-          <!-- <span id="icon-edit">Edit below</span> -->
+          <span id="icon-edit">Edit below</span>
           <div id="icon" contenteditable="true">&NewLine;&nbsp;/<span class="i-dot">.</span>*<span class="i-setter">$#</span>-\&nbsp;&NewLine;&nbsp;\<span class="i-brace">{</span><span class="i-oper">+</span><span class="i-brace">}</span><span class="i-value">1</span><span class="i-setter">#</span>/&nbsp;&NewLine;&NewLine;</div>
-          <!-- <a id="icon-run" href="/asciidots/#code:CqAvLiokIy1coAqgXHsrfTEjL6AKCg==" target=”_blank”>Run online</a> -->
+          <a id="icon-run" href="https://ajanse.me/asciidots/#code:CqAvLiokIy1coAqgXHsrfTEjL6AKCg==" target=”_blank”>Run online</a>
           <script>
             let icon = document.querySelector("#icon");
             let icon_run = document.querySelector("#icon-run");
             icon.addEventListener("input", function() {
               let code = icon.innerText;
-              // FIXME: figure out newlines on mobile
-              let url = "/asciidots/#code:" + btoa(code);
-              icon_run.href = url;
+              let encoded = btoa(code).replace(/\//g, '_').replace(/\+/g, '-');
+              icon_run.href = "https://ajanse.me/asciidots/?code=" + encoded;
             })
           </script>
         </div>
