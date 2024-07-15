@@ -1,0 +1,78 @@
+
+<!DOCTYPE HTML>
+
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page.title }}</title>
+    <link rel="shortcut icon" type="image/png" href="https://blog-preview.ajanse.me/favicon.png">
+    
+    <meta name="author" content="Your Name" />
+    <link rel="stylesheet" href="/index.css">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Source+Code+Pro:ital,wght@0,200..900;1,200..900&family=Ubuntu+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+
+  </head>
+  <body>
+    <header>
+      <div>
+        <div id="icon-area">
+          <span id="icon-edit">Edit below</span>
+          <div id="icon" contenteditable="true">&NewLine;&nbsp;/<span class="i-dot">.</span>*<span class="i-setter">$#</span>-\&nbsp;&NewLine;&nbsp;\<span class="i-brace">{</span><span class="i-oper">+</span><span class="i-brace">}</span><span class="i-value">1</span><span class="i-setter">#</span>/&nbsp;&NewLine;&NewLine;</div>
+          <a id="icon-run" href="/asciidots/#code:CqAvLiokIy1coAqgXHsrfTEjL6AKCg==" target=”_blank”>Run online</a>
+          <script>
+            let icon = document.querySelector("#icon");
+            let icon_run = document.querySelector("#icon-run");
+            icon.addEventListener("input", function() {
+              let code = icon.innerText;
+              // FIXME: figure out newlines on mobile
+              let url = "/asciidots/#code:" + btoa(code);
+              icon_run.href = url;
+            })
+          </script>
+        </div>
+        <h1>
+          <a href="/">Aaron Janse</a>
+        </h1>
+      </div>
+      <div id="links">
+        <a href="https://github.com/aaronjanse">github</a>
+        <a href="https://linkedin.com/in/aaronjanse">linkedin</a>
+        <a href="#" onclick="ebg13()">ebg13</a>
+      </div>
+      <p>I'm <span id="recent-cal-grad">a recent Cal graduate</span> interested in high&#8209;performance systems and finance.</p>
+      <script>
+        if ((new Date()).getFullYear() >= 2028) {
+          document.querySelector("#recent-cal-grad").remove();
+        }
+      </script>
+    </header>
+    <section>
+      {{ content }}
+    </section>
+
+    <!-- <hr>
+
+    <div id="footer">
+      <a href="/feed.xml">RSS</a>
+    </div> -->
+
+    <script>
+      // uggcf://yvsrpf.yvxnv.bet/2013/04/znxvat-bs-obbxznexyrg-gb-ebg13-jro-cntr.ugzy
+      function ebg13(){function b(c,d){if(!(c.nodeType==c.ELEMENT_NODE&&c.tagName in a)){if(c.nodeType==c.TEXT_NODE)return d(c);for(var e=c.firstChild;e;e=e.nextSibling)b(e,d)}}function c(a){var b=a.charCodeAt(0);return b>=65&&90>=b?b=(b-65+13)%26+65:b>=97&&122>=b&&(b=(b-97+13)%26+97),String.fromCharCode(b)}var a={SCRIPT:1,STYLE:1};b(document.documentElement,function(a){a.data=a.data.replace(/[A-Za-z]/g,c)})}
+    </script>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-XJY8TQ0JYC"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-XJY8TQ0JYC');
+    </script>
+  </body>
+</html>

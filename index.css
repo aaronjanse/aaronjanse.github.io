@@ -1,0 +1,169 @@
+@import url('https://fonts.googleapis.com/css2?family=Ubuntu+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+
+@font-face {
+    font-family: 'Univers LT Std';
+    font-style: normal;
+    font-weight: normal;
+    src: local('Univers LT Std 55 Roman'), url('/assets/UniversLTStd.woff') format('woff');
+}
+
+@font-face {
+    font-family: 'Berkeley Mono';
+    font-style: normal;
+    font-weight: normal;
+    src: local('Berkeley Mono'), url('/assets/BerkeleyMonoVariable-Regular.woff2') format('woff2'), italic;
+}
+
+
+html {
+    background-color: #eee;
+}
+
+body {
+    font-family: 'Univers LT Std';
+    font-size: 16px;
+    max-width: 40em;
+    margin: auto;
+    padding-top: 4em;
+    padding-bottom: 2em;
+    padding-left: 1.5em;
+    padding-right: 1.5em;
+}
+
+pre span {
+    font-family: "Source Code Pro", monospace;
+}
+
+#icon-area {
+    font-family: "Source Code Pro", monospace;
+    font-size: 16px;
+    float: left;
+    margin-left: -12ch;
+    margin-right: 2ch;
+
+    padding-bottom: 1em; /* extra padding for #icon-run */
+}
+
+#icon {
+    font-family: "Source Code Pro", monospace;
+}
+
+#icon-edit {
+    position: absolute;
+    margin-top: -1.5em;
+    font-size: 14px;
+    display: none;
+}
+
+#icon-run {
+    margin-top: 0.25em;
+    margin-bottom: 0.75em;
+
+    position: absolute;
+
+    font-size: 14px;
+    display: none;
+}
+
+#icon-area:hover #icon-edit, #icon-area:hover #icon-run {
+    display: block;
+}
+
+#icon {
+    font-size: 16px;
+    color: #abb2bf;
+    background-color: #111;
+
+    white-space: pre-line;
+
+    font-weight: 700;
+    border-radius: 10%;
+    padding: 0.5ch;
+}
+
+#icon a {
+    float: left;
+}
+
+
+#icon .i-setter {
+    color: #c678dd;
+}
+
+#icon .i-value {
+    color: #6C8CD5;
+}
+
+#icon .i-oper {
+    color: #727780;
+}
+
+#icon .i-brace {
+    color: #d19a66;
+}
+
+#icon .i-dot {
+    color: #e06c75;
+}
+  
+
+h1 {
+    margin-bottom: 0.1em;
+}
+
+h1 a {
+    color: inherit;
+    text-decoration: none;
+}
+
+
+#links {
+    display: flex;
+}
+
+#links a {
+    margin-right: 1em;
+    /* text-decoration: none;
+    color: #eee;
+    font-weight: bold; */
+}
+
+header p {
+    display: inline-block;
+}
+
+/* Post list */
+
+.post-date {
+    font-family: 'Berkeley Mono';
+    margin-right: 0.5em;
+}
+
+
+
+@media (max-width: 900px) {
+    body {
+        padding-top: 2em;
+    }
+
+    #icon-area {
+        margin-left: 0;
+        display: inline-block;
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    html {
+        background-color: #131516;
+        color: #eee;
+    }
+
+    #icon {
+        background-color: #000;
+    }
+
+    a {
+        color: #3391ff;
+    }
+}
