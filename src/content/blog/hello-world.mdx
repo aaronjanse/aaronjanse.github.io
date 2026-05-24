@@ -1,0 +1,95 @@
+---
+title: "Hello, world — and a bisection demo"
+date: 2026-05-13
+---
+
+import LightsWidget from '../../components/lights/LightsWidget.jsx';
+import RekordboxOcrWidget from '../../components/lights/RekordboxOcrWidget.jsx';
+import StrobeMarkovWidget from '../../components/lights/StrobeMarkovWidget.jsx';
+import EffectsPlanWidget from '../../components/lights/EffectsPlanWidget.jsx';
+
+Intro
+
+Early on, I decided that I want the lights to plan the entire song in advance. I want the lights to know when the drop is and to save special effects for it. Our parties usually have audio playing from Spotify, Rekordbox (popular DJing software), or DJ Pro AI (automatic DJing software).
+
+Read DJ software state via OCR, DB cracking, and fuzzy search
+
+The first step to syncing lights to music playing from one of these platforms is figuring out what song is playing and how it's being played. DJs will speed up / slow down a song to make transitions smoother, and they'll jump between sections of the song. I call this data the "playback state".
+
+Extracting the playback state varies by platform. For Spotify, I could use AppleScript to read this data. For DJ Pro AI, I could use macOS accessibility libraries to parse the app's UI. And for Rekordbox, I chose to regularly take screenshots and use OCR, because the accessibility libraries didn't work. In several of these approaches, we might get a rounded seek time or, for OCR'd rekordbox, entirely erroneous numbers at times.
+
+We'll need to repeatedly "measure" the DJ software to estimate its actual, unrounded internal state. The current seek time (e.g. 1:43 into a song) is a moving target, so we instead collect estimates of the song start time; we can compute this as a function of the measurement time, measured seek time, and measured playback speed. For Rekordbox, we'll need to be able to distinguish between OCR errors versus the DJ actually skipping to a different part of the song.
+
+We also need to know the song structure. This could have been an entire project of its own, but I decided to use existing solutions. When using Rekordbox (bigger events), I'd parse Rekordbox's local track analysis DB, which requires some [decryption reverse engineering](link). I'd fuzzy search our OCR'd song title+author to find a matching track in the DB. The analysis contains timestamps for beats and measures in the song, along with breaking the track into sections like chorus, build up, bridge, etc. For some songs with a big drop, it contains timestamps of each moment the build-up intensifies; this data was used in the live demo video I included above.
+
+For songs played via Spotify or DJ Pro AI, I used Spotify's track analysis API after doing a fuzzy song search. The quality of Spotify's analysis is far worse than Rekordbox, often misclassifying sections or even measures. But it was still substantially better than nothing, and it was nice to just hit play on Spotify and have my lights automatically go along.
+
+You can see a visualization of all of this below:
+
+<RekordboxOcrWidget client:load />
+
+Defining a library of light effects
+
+I chose to define light effects as a stateful-looking python function over song measures, which emits snapshots of the desired state at each timestamp. I think light patterns "feel" imperative, like turning on and off a light to blink…
+
+For example:
+
+```py
+def two_color_blink_effect(lights, measures):
+  color1, color2 = random_color(), random_color()
+  for measure in measures:
+    for i, beat in enumerate(measure):
+      match i % 4:
+        case 0:
+          lights.color(color1)
+        case 1:
+          lights.color(None)
+        case 2:
+          lights.color(color2)
+        case 3:
+          lights.color(None)
+      lights.at(beat)
+```
+
+Calling something like lights.dump() after calling the above function would return:
+
+| song_seek_position | color |
+| --- | --- |
+| 1.123 | red |
+| 1.223 | none |
+| 1.323 | blue |
+| 1.423 | none |
+
+Markov chain for stateful strobes
+
+So when do we want strobes? Ideally we have strobes for, say, 33% of the night. Strobes are the strongest tool we have to emphasize things, so it's nice when they highlight a drop or are predictable to emphasize a rhythm. I wanted to build waves of energy in the night. So rather than uniformly strobing on 33% of drops, I used a markov chain to toggle whether strobes stay enabled/disabled when we switch between songs. This made it so that when you saw a strobe, you can probably expect a strobe to emphasize the next drop, without having strobes on for the entire night:
+
+<StrobeMarkovWidget client:load />
+
+Time-of-day effects
+
+The beginning of a party (the pre-game) involves a lot of mostly-sober socializing. It's nice to have good light to see each others' faces, and the lighting should encourage people to talk with each other. As the night progresses, people get more into the music and dancing, and by the end of the night we want to go all out with strobes / blacklight / etc, because why not?
+
+Putting it all together to make a light plan
+
+I combine the things above fairly trivially to make a song. For an entire song, I'll choose the available effects based on time of day and strobiness. I'll use one effect per section of the song, and I had some special effects for songs with a build-up to a drop. I also added random strobes between song sections:
+
+<EffectsPlanWidget client:load />
+
+An interesting shortcut I took was entirely ignoring song transitions. For context, a virtual DJ deck usually has two songs; one is the main song and another is a song we're mixing in/out.
+
+[image of rekordbox]
+
+I decided to focus on making the lights match the master song. The transitions kinda just work without efforts from the lights? The DJ usually lines up and bpm-adjusts the songs, so as you transition from song A to song B, song A's light patterns don't look weird when played over song B.
+
+Communicating with the lighting hardware
+
+Stage lights, including cheap ones from Amazon, often use DMX as a protocol to control them. It's a basic serial protocol [TODO: based on frames? idk], with some silly limitations like a max baud rate in case of mistakes [TODO: fact check this!]. The physical connector is the same as an audio cable but with the male/female plugs swapped to reduce accidents. Rather than buying a proper USB-to-DMX converter, I cheaped out and programmed an Arduino to emit DMX signals based on serial data.
+
+[image of arduino]
+
+On the computer side, I'd take the song plan (in song playback space) and project it onto wall clock time based on the playback state. For example, if the DJ is playing a song at 1.2x speed, we'll want to play the light effects 1.2x faster. I also had a fallback emergency loop in case anything went wrong, to keep the party going.
+
+[visualization D]
+
+<LightsWidget client:load />

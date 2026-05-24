@@ -1,6 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Ubuntu+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
 
-
 @font-face {
     font-family: 'Univers LT Std';
     font-style: normal;
@@ -14,7 +13,6 @@
     font-weight: normal;
     src: local('Berkeley Mono'), url('/assets/BerkeleyMonoVariable-Regular.woff2') format('woff2'), italic;
 }
-
 
 html {
     background-color: #eee;
@@ -106,7 +104,7 @@ pre span {
 #icon .i-dot {
     color: #e06c75;
 }
-  
+
 
 h1 {
     margin-bottom: 0.1em;
@@ -124,9 +122,6 @@ h1 a {
 
 #links a {
     margin-right: 1em;
-    /* text-decoration: none;
-    color: #eee;
-    font-weight: bold; */
 }
 
 header p {
@@ -140,7 +135,10 @@ header p {
     margin-right: 0.5em;
 }
 
-
+.related ul {
+    list-style: none;
+    padding-left: 0;
+}
 
 @media (max-width: 900px) {
     body {

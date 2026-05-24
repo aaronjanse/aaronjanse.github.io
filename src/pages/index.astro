@@ -1,0 +1,48 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+
+const posts = (await getCollection('blog')).sort(
+  (a, b) => b.data.date.getTime() - a.data.date.getTime()
+);
+---
+
+<BaseLayout title="Aaron Janse">
+  <h2>Projects</h2>
+  <ul>
+    <li>
+      <a href="https://ajanse.me/asciidots">asciidots</a> is an esoteric programming
+      language based on ascii art. It has been
+      <a href="https://esolangs.org/wiki/BrainDots">credited</a>
+      <a href="https://esolangs.org/wiki/Dotlang">as</a>
+      <a href="https://www.media.mit.edu/projects/2d-an-exploration-of-drawing-as-programming-language-featuring-ideas-from-lambda-calculus/overview/">inspiring</a>
+      <a href="https://esolangs.org/wiki/Backrooms">a</a>
+      <a href="https://esolangs.org/wiki/LaserFuck">few</a>
+      <a href="https://esolangs.org/wiki/Dot%27s">other</a>
+      <a href="https://esolangs.org/wiki/Nightmare">languages</a>
+      <a href="https://esolangs.org/wiki/Electra">across</a>
+      <a href="https://github.com/UnaryPlus/multifunge">the</a>
+      <a href="https://github.com/Gunngg/beat">internet</a>.
+    </li>
+    <li><a href="https://github.com/aaronjanse/3mux">3mux</a> is a terminal multiplexer inspired by i3wm.</li>
+    <li><a href="https://github.com/aaronjanse/dns-over-wikipedia">DNS Over Wikipedia</a> is a web extension that redirects domains ending with <code>.idk</code> based on the relevant infobox on Wikipedia.</li>
+  </ul>
+
+  {posts.length > 0 && (
+    <>
+      <h2>Posts</h2>
+      <div class="content">
+        <div class="related">
+          <ul>
+            {posts.map((post) => (
+              <li>
+                <span class="post-date">{post.data.date.toISOString().slice(0, 10)}</span>
+                <a href={`/blog/${post.id}/`}>{post.data.title}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </>
+  )}
+</BaseLayout>
