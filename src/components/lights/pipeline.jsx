@@ -919,7 +919,6 @@ export function OcrSidecar({ song, position }) {
 
       <div className="ocr-viz-grid">
         <OcrNumberLine samples={samples} intersection={intersection} acceptedSet={acceptedSet} truthS={truthS} />
-        <OcrCircle samples={samples} intersection={intersection} acceptedSet={acceptedSet} truthS={truthS} />
       </div>
     </section>
   );
