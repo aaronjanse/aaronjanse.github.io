@@ -1,0 +1,744 @@
+<div id="image-selection" hidden>
+  <button type="button" aria-label="Resize selected image" title="Drag to resize; double-click to reset">↘</button>
+</div>
+<div id="arrange-hint" hidden></div>
+
+<script>
+  const overlay = document.querySelector<HTMLElement>('#image-selection')!;
+  const handle = overlay.querySelector('button')!;
+  const elements = [...document.querySelectorAll<HTMLElement>(
+    '.poster, .pothos, .cube, .klein-bottle, .rubber-band-ball'
+  )];
+  type Placement = { x: number; y: number; scale: number; rotation?: number };
+  // The stylesheet places everything. Press S to arrange things by hand and
+  // S again to copy where they ended up, so the stylesheet can be updated.
+  // While arranging, a moved item keeps its centre at the same fraction of
+  // the viewport across resizes.
+  type Anchor = { x: number; y: number; scale: number };
+  const mobileLayout = window.matchMedia('(max-width: 1100px)');
+  const layoutName = () => mobileLayout.matches ? 'mobile' : 'desktop';
+  const anchors = new Map<HTMLElement, Anchor>();
+  const hint = document.querySelector<HTMLElement>('#arrange-hint')!;
+  const nameOf = (element: HTMLElement) =>
+    element.id || [...element.classList].find(c => !['poster', 'arrangeable-image', 'engaged'].includes(c)) || '';
+  let editing = false;
+  const states = new Map<HTMLElement, Placement>();
+  let selected: HTMLElement | null = null;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const ball = elements.find(element => element.matches('.rubber-band-ball'));
+  let ballFrame = 0;
+  let velocity = { x: 0, y: 0 };
+  let compression = 0;
+  let compressionDirection = { x: 0, y: 1 };
+  let cursor: { x: number; y: number; vx: number; vy: number; time: number } | null = null;
+  let ballTouch: number | null = null;
+  let ballTouchStarted = 0;
+  let ballTouchTravel = 0;
+  const wallRight = () => document.documentElement.clientWidth;
+  const pageBottom = () => document.body.getBoundingClientRect().bottom + window.scrollY;
+  // Layout position in page coordinates, ignoring transforms.
+  function pageTop(element: HTMLElement) {
+    let top = 0;
+    for (let box: Element | null = element; box instanceof HTMLElement; box = box.offsetParent) top += box.offsetTop;
+    return top;
+  }
+  // The ball rests on the floor and bounces back to it. Keeping the floor
+  // where the ball is laid out means bouncing can never lengthen the page.
+  function ballRadius() {
+    return ball ? Math.min(ball.offsetWidth, ball.offsetHeight) * states.get(ball)!.scale / 2 : 0;
+  }
+  function ballRestFloor() {
+    return ball ? pageTop(ball) + ball.offsetHeight / 2 + ballRadius() : 0;
+  }
+  let ballFloorPage = 0;
+  function ballViewportBottom() {
+    return ballFloorPage - window.scrollY;
+  }
+
+  // Objects sit behind the text until a visitor engages one, by pointing at
+  // it, dragging it or setting it in motion. The class lifts it above.
+  const engagements = new Map<HTMLElement, Set<string>>();
+  function engage(element: HTMLElement, reason: string, on: boolean) {
+    let reasons = engagements.get(element);
+    if (!reasons) engagements.set(element, reasons = new Set());
+    if (on) reasons.add(reason); else reasons.delete(reason);
+    element.classList.toggle('engaged', reasons.size > 0);
+  }
+
+  function cursorCollision(x: number, y: number, radius: number) {
+    if (cursor && !active && !reducedMotion.matches) {
+      const dx = x - cursor.x;
+      const dy = y - cursor.y;
+      const distance = Math.hypot(dx, dy);
+      const nx = dx / Math.max(distance, 0.001);
+      const ny = dy / Math.max(distance, 0.001);
+      const blockedX = (x <= radius + 3 && nx < -0.5)
+        || (x >= wallRight() - radius - 3 && nx > 0.5);
+      const blockedY = (y <= radius + 3 && ny < -0.5)
+        || (y >= ballViewportBottom() - radius - 3 && ny > 0.5);
+      if (distance < radius + 2 && (blockedX || blockedY)) {
+        compression = Math.max(0.03, Math.min(0.55, (radius + 2 - distance) / (radius * 1.5)));
+        // Only compress along axes constrained by a surface.
+        const constrainedX = blockedX ? nx : 0;
+        const constrainedY = blockedY ? ny : 0;
+        const constrainedLength = Math.hypot(constrainedX, constrainedY);
+        compressionDirection = {
+          x: constrainedX / constrainedLength,
+          y: constrainedY / constrainedLength,
+        };
+        velocity.x = blockedX ? 0 : velocity.x * 0.85;
+        velocity.y = blockedY ? 0 : velocity.y * 0.85;
+        return {
+          x: blockedX ? (nx < 0 ? radius : wallRight() - radius) : x,
+          y: blockedY ? (ny < 0 ? radius : ballViewportBottom() - radius) : y,
+        };
+      }
+    }
+    if (compression > 0) {
+      const springSpeed = compression * 1500;
+      velocity.x = -compressionDirection.x * springSpeed;
+      velocity.y = -compressionDirection.y * springSpeed;
+      compression = 0;
+    }
+    if (!cursor || active || reducedMotion.matches) return { x, y };
+    const dx = x - cursor.x;
+    const dy = y - cursor.y;
+    const distance = Math.hypot(dx, dy);
+    const clearance = radius + 2;
+    if (distance >= clearance) return { x, y };
+    let nx = distance > 0.1 ? dx / distance : 1;
+    let ny = distance > 0.1 ? dy / distance : 0;
+    const grounded = y >= ballViewportBottom() - radius - 2;
+    const sideways = grounded && Math.abs(dx) > radius * 0.5;
+    if (sideways) { nx = Math.sign(dx); ny = 0; }
+    // Resolve a collision with a moving, solid cursor. Only closing velocity
+    // transfers momentum; touching alone adds no energy.
+    const moving = performance.now() - cursor.time < 50;
+    const cursorVX = moving ? Math.max(-2400, Math.min(2400, cursor.vx)) : 0;
+    const cursorVY = moving ? Math.max(-2400, Math.min(2400, cursor.vy)) : 0;
+    const relativeNormalSpeed = (velocity.x - cursorVX) * nx + (velocity.y - cursorVY) * ny;
+    const impulse = Math.max(0, -relativeNormalSpeed);
+    velocity.x += nx * impulse;
+    velocity.y += ny * impulse;
+    if (sideways) {
+      const separation = Math.sqrt(Math.max(0, clearance * clearance - dy * dy));
+      return { x: cursor.x + nx * separation, y };
+    }
+    return { x: x + nx * (clearance - distance), y: y + ny * (clearance - distance) };
+  }
+  let active: { id: number; x: number; y: number; initial: Placement; resizing: boolean; size: number } | null = null;
+
+  function outline() {
+    if (!selected || !editing) { overlay.hidden = true; return; }
+    const rect = selected.getBoundingClientRect();
+    overlay.hidden = false;
+    Object.assign(overlay.style, {
+      left: `${rect.left}px`, top: `${rect.top}px`,
+      width: `${rect.width}px`, height: `${rect.height}px`,
+    });
+  }
+
+  function apply(element: HTMLElement) {
+    const state = states.get(element)!;
+    element.style.translate = `${state.x}px ${state.y}px`;
+    element.style.scale = `${state.scale}`;
+    element.style.rotate = `${state.rotation || 0}deg`;
+    if (element === ball) {
+      // The texture rolls inside the ball, which squashes in screen
+      // coordinates as a whole.
+      element.style.rotate = '0deg';
+      const image = element.querySelector('img');
+      if (image) image.style.rotate = `${state.rotation || 0}deg`;
+      if (compression) {
+        const radius = Math.min(element.offsetWidth, element.offsetHeight) / 2;
+        const angle = Math.atan2(compressionDirection.y, compressionDirection.x) * 180 / Math.PI;
+        element.style.transform = `translate(${radius * compression * compressionDirection.x}px, ${radius * compression * compressionDirection.y}px) rotate(${angle}deg) scale(${1 - compression}, ${1 + compression * 0.45}) rotate(${-angle}deg)`;
+      } else {
+        element.style.transform = '';
+      }
+    }
+    outline();
+  }
+
+  function start(event: PointerEvent, element: HTMLElement, resizing: boolean) {
+    if (event.button !== 0 || active || ballTouch !== null) return;
+    if (!editing && element !== ball) return;
+    event.preventDefault();
+    selected = element;
+    active = {
+      id: event.pointerId, x: event.clientX, y: event.clientY,
+      initial: { ...states.get(element)! }, resizing,
+      size: Math.max(element.getBoundingClientRect().width, 1),
+    };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    engage(element, 'drag', true);
+    outline();
+  }
+
+  elements.forEach(element => {
+    states.set(element, { x: 0, y: 0, scale: 1 });
+    element.classList.add('arrangeable-image');
+    element.setAttribute('draggable', 'false');
+    element.querySelectorAll('img').forEach(img => img.draggable = false);
+    if (element !== ball) {
+      element.addEventListener('pointerdown', event => start(event, element, false));
+    }
+    element.addEventListener('pointerenter', () => engage(element, 'pointer', true));
+    element.addEventListener('pointerleave', () => engage(element, 'pointer', false));
+    apply(element);
+  });
+
+  // An item moved while arranging keeps an anchor: its centre as a fraction
+  // of the viewport. Settling back onto it after a resize keeps the trial
+  // layout proportionally the same on any screen.
+  const viewport = () => ({ w: document.documentElement.clientWidth, h: document.documentElement.clientHeight });
+  function centre(element: HTMLElement) {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2 + window.scrollX, y: rect.top + rect.height / 2 + window.scrollY };
+  }
+  const shown = (element: HTMLElement) => element.getBoundingClientRect().width > 0;
+  function remember(element: HTMLElement) {
+    if (!shown(element)) return;
+    const { w, h } = viewport();
+    const at = centre(element);
+    anchors.set(element, { x: at.x / w, y: at.y / h, scale: states.get(element)!.scale });
+  }
+  function settle(element: HTMLElement) {
+    const anchor = anchors.get(element);
+    if (!anchor || !shown(element)) return;
+    const state = states.get(element)!;
+    Object.assign(state, { x: 0, y: 0, scale: anchor.scale });
+    apply(element);
+    const { w, h } = viewport();
+    const at = centre(element);
+    state.x = anchor.x * w - at.x;
+    state.y = anchor.y * h - at.y;
+    apply(element);
+  }
+  // Back to wherever the stylesheet puts it.
+  function release(element: HTMLElement) {
+    anchors.delete(element);
+    Object.assign(states.get(element)!, { x: 0, y: 0, scale: 1 });
+    apply(element);
+  }
+  const settleAll = () => anchors.forEach((_, element) => settle(element));
+  mobileLayout.addEventListener('change', () => [...anchors.keys()].forEach(release));
+  let lastViewport = viewport();
+  window.addEventListener('resize', () => {
+    const now = viewport();
+    // A phone's address bar only nudges the height; leave things be.
+    if (now.w === lastViewport.w && Math.abs(now.h - lastViewport.h) < lastViewport.h * 0.25) return;
+    lastViewport = now;
+    if (!active) settleAll();
+  });
+
+  function bounceBall() {
+    if (!ball || reducedMotion.matches || ballFrame) return;
+    ballFloorPage = ballRestFloor();
+    engage(ball, 'motion', true);
+    let previous = performance.now();
+    let accumulator = 0;
+    const step = 1 / 120;
+    const tick = (now: number) => {
+      if (active && selected === ball) { ballFrame = 0; engage(ball, 'motion', false); return; }
+      if (document.hidden) { previous = now; }
+      accumulator += Math.min((now - previous) / 1000, 0.05);
+      previous = now;
+      // The first animation frame can arrive before a full physics step.
+      // Keep it awake until cursor contact has actually been processed.
+      if (accumulator < step) {
+        ballFrame = requestAnimationFrame(tick);
+        return;
+      }
+      const state = states.get(ball)!;
+      const rect = ball.getBoundingClientRect();
+      const radius = ballRadius();
+      let x = (rect.left + rect.right) / 2;
+      let y = (rect.top + rect.bottom) / 2;
+      const initialX = x;
+      const initialY = y;
+      const floor = ballViewportBottom() - radius;
+      while (accumulator >= step) {
+        velocity.y += 1500 * step;
+        velocity.x *= Math.exp(-0.12 * step);
+        x += velocity.x * step;
+        y += velocity.y * step;
+        ({ x, y } = cursorCollision(x, y, radius));
+        if (x < radius) { x = radius; velocity.x = Math.abs(velocity.x) * 0.82; }
+        if (x > wallRight() - radius) {
+          x = wallRight() - radius; velocity.x = -Math.abs(velocity.x) * 0.82;
+        }
+        if (y < radius) { y = radius; velocity.y = Math.abs(velocity.y) * 0.8; }
+        if (y >= floor) {
+          y = floor;
+          velocity.y = Math.abs(velocity.y) < 65 ? 0 : -Math.abs(velocity.y) * 0.76;
+          velocity.x *= Math.exp(-2.5 * step);
+        }
+        accumulator -= step;
+      }
+      state.x += x - initialX;
+      state.y += y - initialY;
+      state.rotation = ((state.rotation || 0) + (x - initialX) / Math.max(radius, 1) * 180 / Math.PI) % 360;
+      apply(ball);
+      if (!compression && y >= floor - 0.5 && Math.abs(velocity.x) < 5 && Math.abs(velocity.y) < 1) {
+        ballFrame = 0;
+        engage(ball, 'motion', false);
+        return;
+      }
+      ballFrame = requestAnimationFrame(tick);
+    };
+    ballFrame = requestAnimationFrame(tick);
+  }
+
+  if (ball) {
+    ball.style.transformOrigin = '50% 50%';
+    const updateCursor = (event: PointerEvent) => {
+      const now = performance.now();
+      const elapsed = cursor ? Math.max((now - cursor.time) / 1000, 0.008) : 1;
+      const previous = cursor;
+      cursor = {
+        x: event.clientX, y: event.clientY, time: now,
+        vx: previous ? (event.clientX - previous.x) / elapsed : 0,
+        vy: previous ? (event.clientY - previous.y) / elapsed : 0,
+      };
+      if (active || editing || reducedMotion.matches) return;
+      const rect = ball.getBoundingClientRect();
+      if (Math.hypot(rect.left + rect.width / 2 - cursor.x, rect.top + rect.height / 2 - cursor.y) < ballRadius() + 2) {
+        bounceBall();
+      }
+    };
+    ball.addEventListener('pointerdown', event => {
+      event.preventDefault();
+      if (ballTouch !== null || active) return;
+      if (event.pointerType !== 'touch') {
+        // A mouse can only move the ball while arranging; otherwise it
+        // pushes the ball around by running into it.
+        if (editing) start(event, ball, false);
+        return;
+      }
+      start(event, ball, false);
+      ballTouch = event.pointerId;
+      ballTouchStarted = performance.now();
+      ballTouchTravel = 0;
+      velocity = { x: 0, y: 0 };
+      compression = 0;
+      cursor = { x: event.clientX, y: event.clientY, vx: 0, vy: 0, time: performance.now() };
+      apply(ball);
+    });
+    document.addEventListener('pointermove', event => {
+      if (ballTouch !== null || event.pointerType === 'touch') return;
+      updateCursor(event);
+    });
+    ball.addEventListener('lostpointercapture', event => finish(event));
+    document.addEventListener('pointerleave', () => {
+      if (ballTouch === null) cursor = null;
+    });
+    window.addEventListener('resize', () => {
+      if (ballFrame && !active) ballFloorPage = ballRestFloor();
+    });
+  }
+
+  // Each object moves according to its material, relative to its default position.
+  const logo = document.querySelector<HTMLElement>('#icon-frame');
+  const playfulItems = logo ? [...elements, logo] : elements;
+  playfulItems.forEach(element => {
+    if (element === ball) return;
+    if (!states.has(element)) states.set(element, { x: 0, y: 0, scale: 1 });
+    const hanging = element.matches('.poster, .pothos, #icon-frame');
+    element.style.transformOrigin = hanging ? '50% 8%' : '50% 90%';
+    if (element.matches('.cube')) {
+      let dropped = false;
+      const drop = () => {
+        if (dropped || active || reducedMotion.matches) return;
+        dropped = true;
+        const bottle = document.querySelector<HTMLElement>('.klein-bottle');
+        const solid = element.querySelector<HTMLElement>('.cube-solid');
+        if (!bottle || !solid) return;
+        engage(element, 'motion', true);
+        const state = states.get(element)!;
+        state.rotation = 0;
+        apply(element);
+        const bottleRect = bottle.getBoundingClientRect();
+        const bottlePageTop = bottleRect.top + window.scrollY;
+        const floorPage = pageBottom();
+        const shatter = () => {
+        // Break the actual bottle photograph into triangular glass fragments.
+        bottle.style.opacity = '0';
+        bottle.style.pointerEvents = 'none';
+        for (let row = 0; row < 4; row++) {
+          for (let column = 0; column < 3; column++) {
+            for (let half = 0; half < 2; half++) {
+              const shard = document.createElement('img');
+              shard.src = (bottle as HTMLImageElement).src;
+              shard.alt = '';
+              shard.setAttribute('aria-hidden', 'true');
+              const x0 = column * 100 / 3, x1 = (column + 1) * 100 / 3;
+              const y0 = row * 25, y1 = (row + 1) * 25;
+              const polygon = half
+                ? `${x0}% ${y0}%, ${x1}% ${y1}%, ${x0}% ${y1}%`
+                : `${x0}% ${y0}%, ${x1}% ${y0}%, ${x1}% ${y1}%`;
+              Object.assign(shard.style, {
+                position: 'absolute', left: `${bottleRect.left + window.scrollX}px`, top: `${bottlePageTop}px`,
+                width: `${bottleRect.width}px`, height: `${bottleRect.height}px`,
+                maxWidth: 'none', pointerEvents: 'none', zIndex: '20',
+                clipPath: `polygon(${polygon})`, mixBlendMode: 'multiply',
+                transformOrigin: `${(x0 + x1) / 2}% ${(y0 + y1) / 2}%`,
+              });
+              // Beside the cube, inside the layer that clips at the screen's edge.
+              (element.parentElement ?? document.body).append(shard);
+              const spread = (Math.random() - 0.35) * 210;
+              const floor = floorPage - window.scrollY - bottleRect.top - bottleRect.height * (y0 + y1) / 200 - 12;
+              shard.animate([
+                { translate: '0px 0px', rotate: '0deg' },
+                { translate: `${spread * 0.5}px -${20 + Math.random() * 50}px`, rotate: `${spread}deg`, offset: 0.35 },
+                { translate: `${spread}px ${floor}px`, rotate: `${spread * 2}deg` },
+              ], { duration: 650 + Math.random() * 250, easing: 'ease-in', fill: 'forwards' });
+            }
+          }
+        }
+
+        };
+        let shattered = false;
+        let vy = 0;
+        let pitch = -24, roll = 0;
+        let pitchVelocity = 2, rollVelocity = 3;
+        let targetPitch = 0, targetRoll = 0;
+        let landed = false;
+        let previous = performance.now();
+        let accumulator = 0;
+        const dt = 1 / 120;
+        const radians = Math.PI / 180;
+        const half = 42 * state.scale;
+        // Vertical support of a rotated box from the second row of Rx Ry Rz.
+        const support = () => {
+          const sx = Math.sin(pitch * radians), cx = Math.cos(pitch * radians);
+          const sz = Math.sin(roll * radians), cz = Math.cos(roll * radians);
+          const sy = Math.sin(-38 * radians), cy = Math.cos(-38 * radians);
+          return half * (Math.abs(cx * sz + sx * sy * cz)
+            + Math.abs(cx * cz - sx * sy * sz) + Math.abs(sx * cy));
+        };
+        const tick = (now: number) => {
+          if (active && selected === element) { engage(element, 'motion', false); return; }
+          accumulator += Math.min((now - previous) / 1000, 0.05);
+          previous = now;
+          const rect = element.getBoundingClientRect();
+          const initialY = rect.top + rect.height / 2;
+          let y = initialY;
+          while (accumulator >= dt) {
+            // No air resistance: acceleration stays constant in free fall.
+            vy += 1600 * dt;
+            y += vy * dt;
+            if (landed) {
+              pitchVelocity += (-85 * (pitch - targetPitch) - 15 * pitchVelocity) * dt;
+              rollVelocity += (-85 * (roll - targetRoll) - 15 * rollVelocity) * dt;
+            }
+            pitch += pitchVelocity * dt;
+            roll += rollVelocity * dt;
+            const extent = support();
+            if (!shattered && y + extent >= bottlePageTop - window.scrollY + bottleRect.height * 0.16) {
+              shattered = true;
+              shatter();
+              vy *= 0.8;
+              pitchVelocity += 1;
+              rollVelocity += 2;
+            }
+            const floor = floorPage - window.scrollY - 6 - extent;
+            if (y >= floor) {
+              y = floor;
+              if (!landed) {
+                landed = true;
+                // These orientations put an entire face on the ground.
+                targetPitch = Math.round(pitch / 180) * 180;
+                targetRoll = Math.round(roll / 90) * 90;
+              }
+              vy = vy > 60 ? -vy * 0.18 : 0;
+            }
+            accumulator -= dt;
+          }
+          state.y += y - initialY;
+          apply(element);
+          solid.style.transform = `rotateX(${pitch}deg) rotateY(-38deg) rotateZ(${roll}deg)`;
+          if (landed && Math.abs(vy) < 1 && Math.abs(pitch - targetPitch) < 0.05
+            && Math.abs(roll - targetRoll) < 0.05 && Math.abs(pitchVelocity) + Math.abs(rollVelocity) < 0.1) {
+            solid.style.transform = `rotateX(${targetPitch}deg) rotateY(-38deg) rotateZ(${targetRoll}deg)`;
+            state.y += floorPage - window.scrollY - 6 - half - y;
+            apply(element);
+            engage(element, 'motion', false);
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      };
+      element.addEventListener('pointerenter', drop);
+      element.addEventListener('focus', drop);
+      return;
+    }
+
+    // The cursor is a breeze. Air drag grows with the square of speed, so a
+    // slow pass barely stirs the object while a quick sweep sets it rocking
+    // on a damped torsion spring about its mount. Only motion pushes; where
+    // the cursor rests makes no difference.
+    const stiffness = 40; // (rad/s)^2, roughly a one-second swing
+    const damping = 3.5; // underdamped so a gust rocks it a few times
+    const gustiness = 0.055;
+    const limit = 9; // degrees of swing the mount allows
+    const stickBand = 0.35; // friction at the mount stops a dying swing crooked
+    let angularVelocity = 0; // degrees per second
+    let swingFrame = 0;
+    let previousTime = 0;
+    let pointer: { x: number; y: number; time: number } | null = null;
+    let speed = 0;
+
+    const step = (now: number) => {
+      swingFrame = 0;
+      if (active || reducedMotion.matches) { angularVelocity = 0; engage(element, 'motion', false); return; }
+      const dt = Math.min((now - previousTime) / 1000, 0.032);
+      previousTime = now;
+      const state = states.get(element)!;
+      const angle = state.rotation || 0;
+      angularVelocity += (-stiffness * angle - damping * angularVelocity) * dt;
+      state.rotation = angle + angularVelocity * dt;
+      apply(element);
+      if (Math.abs(angularVelocity) < 0.3 && Math.abs(state.rotation) < stickBand) {
+        angularVelocity = 0;
+        engage(element, 'motion', false);
+        return;
+      }
+      swingFrame = requestAnimationFrame(step);
+    };
+    const swing = () => {
+      if (swingFrame) return;
+      engage(element, 'motion', true);
+      previousTime = performance.now();
+      swingFrame = requestAnimationFrame(step);
+    };
+
+    element.addEventListener('pointerenter', event => {
+      pointer = { x: event.clientX, y: event.clientY, time: event.timeStamp };
+      speed = 0;
+    });
+    element.addEventListener('pointermove', event => {
+      const previous = pointer;
+      pointer = { x: event.clientX, y: event.clientY, time: event.timeStamp };
+      if (!previous || active || reducedMotion.matches || event.pointerType === 'touch') return;
+      const dx = event.clientX - previous.x;
+      const dy = event.clientY - previous.y;
+      const dt = Math.max(event.timeStamp - previous.time, 4) / 1000;
+      // Smooth the speed estimate over the last few events; single event
+      // timestamps are too coarse to trust on their own.
+      const measured = Math.hypot(dx, dy) / dt;
+      speed = speed ? speed + (measured - speed) * Math.min(dt / 0.03, 1) : measured;
+      const rect = element.getBoundingClientRect();
+      const size = Math.max(rect.width, rect.height, 1);
+      const rx = event.clientX - (rect.left + rect.width / 2);
+      const ry = event.clientY - (rect.top + rect.height * (hanging ? 0.08 : 0.9));
+      // Torque about the mount: pushing right below the pivot turns the
+      // bottom to the right. Drag is quadratic in speed, so the impulse from
+      // this bit of travel is the travel's torque times the speed.
+      const torque = (rx * dy - ry * dx) / (size * size);
+      angularVelocity += torque * speed * gustiness;
+      // Cap the swing's energy so wild sweeps can't throw it off the wall.
+      const state = states.get(element)!;
+      const headroom = limit * limit - (state.rotation || 0) ** 2;
+      const maxVelocity = headroom > 0 ? Math.sqrt(headroom * stiffness) : 0;
+      angularVelocity = Math.max(-maxVelocity, Math.min(maxVelocity, angularVelocity));
+      swing();
+    });
+    element.addEventListener('pointerleave', () => {
+      pointer = null;
+      speed = 0;
+    });
+  });
+
+  handle.addEventListener('pointerdown', event => {
+    if (selected) start(event, selected, true);
+  });
+  handle.addEventListener('dblclick', () => {
+    if (selected) release(selected);
+  });
+  document.addEventListener('pointermove', event => {
+    if (!active || !selected || event.pointerId !== active.id) return;
+    const dx = event.clientX - active.x;
+    const dy = event.clientY - active.y;
+    const state = states.get(selected)!;
+    if (active.resizing) {
+      state.scale = Math.max(0.25, Math.min(4, active.initial.scale * (1 + 2 * dx / active.size)));
+    } else {
+      state.x = active.initial.x + dx;
+      state.y = active.initial.y + dy;
+    }
+    if (event.pointerId === ballTouch && cursor) {
+      ballTouchTravel = Math.max(ballTouchTravel, Math.hypot(dx, dy));
+      const now = performance.now();
+      const elapsed = Math.max((now - cursor.time) / 1000, 0.008);
+      velocity = {
+        x: Math.max(-2400, Math.min(2400, (event.clientX - cursor.x) / elapsed)),
+        y: Math.max(-2400, Math.min(2400, (event.clientY - cursor.y) / elapsed)),
+      };
+      cursor = { x: event.clientX, y: event.clientY, time: now, vx: velocity.x, vy: velocity.y };
+    }
+    apply(selected);
+  });
+  const finish = (event: PointerEvent) => {
+    if (!active || event.pointerId !== active.id) return;
+    const tappedBall = event.pointerId === ballTouch && event.type === 'pointerup'
+      && performance.now() - ballTouchStarted < 350
+      && Math.max(ballTouchTravel, Math.hypot(event.clientX - active.x, event.clientY - active.y)) < 10;
+    if (selected) {
+      engage(selected, 'drag', false);
+      // A flick is play, not arranging.
+      if (event.pointerId !== ballTouch) remember(selected);
+    }
+    active = null;
+    if (event.pointerId === ballTouch) {
+      if (event.type !== 'pointerup' || !cursor || performance.now() - cursor.time > 100) {
+        velocity = { x: 0, y: 0 };
+      }
+      if (tappedBall && ball) {
+        const rect = ball.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const top = window.visualViewport?.offsetTop || 0;
+        // Randomize within the quadrant pointing away from the closest
+        // horizontal and vertical walls.
+        const angle = (25 + Math.random() * 40) * Math.PI / 180;
+        const speed = 750 + Math.random() * 350;
+        velocity = {
+          x: Math.cos(angle) * speed * (x < wallRight() / 2 ? 1 : -1),
+          y: Math.sin(angle) * speed * (y < (top + ballRestFloor() - window.scrollY) / 2 ? 1 : -1),
+        };
+      }
+      ballTouch = null;
+      cursor = null;
+      selected = null;
+      outline();
+      bounceBall();
+    }
+  };
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('pointercancel', finish);
+  document.addEventListener('pointerdown', event => {
+    if (event.target instanceof Element && !event.target.closest('.arrangeable-image, #image-selection')) {
+      selected = null;
+      outline();
+    }
+  });
+  // S toggles arranging. Leaving it copies where everything is.
+  let hintTimer = 0;
+  function showHint(text: string, ms = 0) {
+    clearTimeout(hintTimer);
+    hint.textContent = text;
+    hint.hidden = false;
+    if (ms) hintTimer = window.setTimeout(() => { hint.hidden = true; }, ms);
+  }
+  function arrangementSource() {
+    const { w, h } = viewport();
+    const column = document.body.getBoundingClientRect();
+    const padding = getComputedStyle(document.body);
+    const px = (n: number) => `${Math.round(n)}px`;
+    const lines = elements.filter(shown).map(element => {
+      const rect = element.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const { scale } = states.get(element)!;
+      return `  ${nameOf(element)}: centre ${(cx / w * 100).toFixed(1)}% ${(cy / h * 100).toFixed(1)}%,`
+        + ` ${px(rect.width)}×${px(rect.height)} box`
+        + ` ${px(rect.left)} from left, ${px(w - rect.right)} from right,`
+        + ` ${px(rect.top)} from top, ${px(h - rect.bottom)} from bottom`
+        + (scale === 1 ? '' : `, scale ${+scale.toFixed(3)}`);
+    });
+    return [
+      `${layoutName()} layout in a ${w}×${h} viewport, text column from ${px(column.left + parseFloat(padding.paddingLeft))} to ${px(column.right - parseFloat(padding.paddingRight))}:`,
+      ...lines,
+    ].join('\n');
+  }
+  function toggleEditing() {
+    editing = !editing;
+    document.documentElement.classList.toggle('arranging', editing);
+    if (editing) {
+      showHint(`Arranging the ${layoutName()} layout: drag to move, pull the corner to resize, double-click it to reset. Press S to copy where everything is and finish.`);
+      return;
+    }
+    selected = null;
+    outline();
+    const source = arrangementSource();
+    navigator.clipboard.writeText(source).then(
+      () => showHint('Layout copied to the clipboard.', 2500),
+      () => { console.log(source); showHint('Could not reach the clipboard; the layout is in the console.', 4000); },
+    );
+  }
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { selected = null; outline(); }
+    const typing = event.target instanceof HTMLElement
+      && (event.target.isContentEditable || /^(input|textarea|select)$/i.test(event.target.tagName));
+    if (event.key.toLowerCase() === 's' && !event.metaKey && !event.ctrlKey && !event.altKey && !typing) {
+      event.preventDefault();
+      toggleEditing();
+    }
+  });
+  window.addEventListener('resize', outline);
+  window.addEventListener('scroll', outline, true);
+</script>
+
+<style is:global>
+  .arrangeable-image {
+    pointer-events: auto !important;
+    user-select: none;
+    /* Behind the text (see global.css) until engaged. */
+    z-index: 0;
+  }
+  .arrangeable-image.engaged,
+  .arranging .arrangeable-image { z-index: 2; }
+  .arranging .arrangeable-image { cursor: grab; touch-action: none; }
+  .arranging .arrangeable-image:active { cursor: grabbing; }
+  /* The ball's box is its circle, so a round hit area keeps touches in the
+     corners from grabbing it. */
+  .rubber-band-ball.arrangeable-image { pointer-events: none !important; touch-action: none; }
+  .rubber-band-ball.arrangeable-image::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    pointer-events: auto;
+  }
+  #arrange-hint {
+    position: fixed;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    z-index: 101;
+    max-width: min(90vw, 560px);
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgb(30 30 30 / 88%);
+    color: #fff;
+    font: 13px/1.4 system-ui, sans-serif;
+    text-align: center;
+    pointer-events: none;
+  }
+  #arrange-hint[hidden] { display: none; }
+  #image-selection {
+    position: fixed;
+    z-index: 100;
+    border: 1px dashed #6685aa;
+    box-sizing: border-box;
+    pointer-events: none;
+  }
+  #image-selection[hidden] { display: none; }
+  #image-selection button {
+    position: absolute;
+    right: -12px;
+    bottom: -12px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid #6685aa;
+    border-radius: 5px;
+    background: white;
+    color: #253e5e;
+    cursor: nwse-resize;
+    pointer-events: auto;
+    touch-action: none;
+  }
+</style>

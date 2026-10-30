@@ -1,6 +1,8 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import { getCollection } from 'astro:content';
+import PosterWall from '../components/PosterWall.astro';
+import ImageArrange from '../components/ImageArrange.astro';
 
 const posts = (await getCollection('blog')).sort(
   (a, b) => b.data.date.getTime() - a.data.date.getTime()
@@ -8,6 +10,9 @@ const posts = (await getCollection('blog')).sort(
 ---
 
 <BaseLayout title="Aaron Janse">
+  <PosterWall slot="top" />
+  <img slot="icon-decoration" class="pothos" src="/assets/pothos-transparent.png" alt="" width="1024" height="1536" aria-hidden="true" />
+
   <h2>Projects</h2>
   <ul>
     <li>
@@ -45,4 +50,159 @@ const posts = (await getCollection('blog')).sort(
       </div>
     </>
   )}
+  <Fragment slot="floor">
+    <div class="corner-objects" aria-hidden="true">
+      <img class="klein-bottle" src="/assets/klein-bottle-clean.png" alt="" width="1000" height="1000" />
+      <div class="cube">
+        <div class="cube-solid">
+          <div class="cube-face cube-front"></div>
+          <div class="cube-face cube-back"></div>
+          <div class="cube-face cube-left"></div>
+          <div class="cube-face cube-right"></div>
+          <div class="cube-face cube-top"></div>
+          <div class="cube-face cube-bottom"></div>
+        </div>
+      </div>
+      <div class="rubber-band-ball">
+        <img src="/assets/rubber-band-ball-transparent-v3.png" alt="" width="1090" height="1090" />
+      </div>
+    </div>
+    <ImageArrange />
+  </Fragment>
 </BaseLayout>
+
+<style>
+  /* The objects stand on the floor, which is the bottom of the page: in the
+     margins beside the text on a wide screen, in a row under the text on a
+     narrow one. The page is a viewport tall (see global.css), so the floor
+     is the bottom of the screen whenever the text fits above it. */
+  .corner-objects {
+    --inset: max(24px, 7vw);
+    /* Covers the first screen and clips whatever swings or rolls past its
+       edge, so nothing can lengthen or widen the page. */
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    overflow: clip;
+    pointer-events: none;
+  }
+
+  .corner-objects > * {
+    position: absolute;
+    bottom: 0;
+    mix-blend-mode: multiply;
+  }
+  .corner-objects > .cube,
+  .corner-objects > .rubber-band-ball {
+    mix-blend-mode: normal;
+  }
+  .corner-objects img { display: block; height: auto; }
+
+  /* The plant hangs beside the top-left corner of the code's frame, its
+     leaves trailing down the frame's edge, in front of the frame even while
+     the frame is being played with (the frame lifts to z 2 then). */
+  :global(#icon-area) .pothos { z-index: 3; }
+  .pothos {
+    position: absolute;
+    width: 88px;
+    height: auto;
+    aspect-ratio: 2 / 3;
+    object-fit: contain;
+    bottom: 40%;
+    left: 0;
+    transform: translateX(-50%);
+    pointer-events: none;
+    filter: drop-shadow(1px 2px 2px rgb(0 0 0 / 12%));
+  }
+  .corner-objects > .klein-bottle { width: 160px; right: var(--inset); }
+  /* The cube hovers high above the bottle until someone disturbs it. */
+  .corner-objects > .cube {
+    width: 110px;
+    height: 110px;
+    right: calc(var(--inset) + 25px);
+    bottom: auto;
+    top: max(24px, 25vh);
+    perspective: 800px;
+  }
+  .cube-solid {
+    position: absolute;
+    width: 84px;
+    height: 84px;
+    left: 13px;
+    top: 13px;
+    transform-style: preserve-3d;
+    transform: rotateX(-24deg) rotateY(-38deg);
+  }
+  .cube-face {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    border: 0.5px solid rgb(220 220 208 / 55%);
+    border-radius: 1px;
+    backface-visibility: hidden;
+    background-color: #92958c;
+    background-image: url('/assets/cube-textures/front.png');
+    background-size: 100% 100%;
+    box-shadow: inset 1px 1px 1px rgb(245 245 232 / 25%),
+                inset -1px -1px 1px rgb(40 40 35 / 12%);
+  }
+  .cube-front { transform: translateZ(42px); }
+  .cube-back { transform: rotateY(180deg) translateZ(42px); }
+  .cube-left { transform: rotateY(-90deg) translateZ(42px); background-image: url('/assets/cube-textures/left.png'); }
+  .cube-right { transform: rotateY(90deg) translateZ(42px); filter: brightness(0.85); }
+  .cube-top { transform: rotateX(90deg) translateZ(42px); background-image: url('/assets/cube-textures/top.png'); }
+  .cube-bottom { transform: rotateX(-90deg) translateZ(42px); filter: brightness(0.65); }
+
+  /* The image is cropped to the ball's edge, so its box can sit flush
+     against the viewport. The texture rolls inside a round window, so the
+     square image's corners never poke out of the box as it turns. */
+  .corner-objects > .rubber-band-ball {
+    width: 112px;
+    left: var(--inset);
+    overflow: hidden;
+    overflow: clip;
+    border-radius: 50%;
+    filter: drop-shadow(3px 6px 5px rgb(0 0 0 / 28%));
+  }
+
+  .rubber-band-ball img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  @media (max-width: 1100px) {
+    /* The page becomes a column whose last row, the floor, takes whatever
+       height the text leaves, so the objects rest at the bottom of the
+       screen and under the text when the screen is short. */
+    :global(body) {
+      display: flex;
+      flex-direction: column;
+    }
+    /* Flex rows don't collapse margins, so the name would drift away from
+       the posters. */
+    :global(header h1) { margin-top: 0; }
+
+    .corner-objects {
+      position: static;
+      inset: auto;
+      overflow: visible;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-top: auto;
+      padding-top: 1.5rem;
+    }
+
+    .corner-objects > * {
+      position: relative;
+      bottom: auto;
+    }
+
+    .corner-objects > .cube,
+    .pothos { display: none; }
+    .corner-objects > .klein-bottle { right: auto; }
+    /* Ball on the left, bottle on the right, as on a wide screen. */
+    .corner-objects > .rubber-band-ball { left: auto; width: 103px; order: -1; }
+  }
+</style>
