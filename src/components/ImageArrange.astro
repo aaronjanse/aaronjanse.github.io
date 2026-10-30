@@ -22,6 +22,7 @@
   const nameOf = (element: HTMLElement) =>
     element.id || [...element.classList].find(c => !['poster', 'arrangeable-image', 'engaged'].includes(c)) || '';
   let editing = false;
+  const editingWatchers: Array<() => void> = [];
   const states = new Map<HTMLElement, Placement>();
   let selected: HTMLElement | null = null;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -347,24 +348,159 @@
     const hanging = element.matches('.poster, .pothos, #icon-frame');
     element.style.transformOrigin = hanging ? '50% 8%' : '50% 90%';
     if (element.matches('.cube')) {
-      let dropped = false;
-      const drop = () => {
-        if (dropped || active || reducedMotion.matches) return;
-        dropped = true;
-        const bottle = document.querySelector<HTMLElement>('.klein-bottle');
-        const solid = element.querySelector<HTMLElement>('.cube-solid');
-        if (!bottle || !solid) return;
-        engage(element, 'motion', true);
-        const state = states.get(element)!;
-        state.rotation = 0;
+      // A rigid cube. A visitor's pointer drops it, picks it up by whatever
+      // point of its surface they press, swings it about that point and
+      // throws it. Positions are page pixels in CSS's frame (x right, y down,
+      // z toward the viewer); the orientation is a quaternion. Each step
+      // moves the cube freely, then corrects positions so the held point
+      // stays under the pointer and nothing passes the floor or walls, and
+      // reads the velocities back off the corrected positions.
+      const solid = element.querySelector<HTMLElement>('.cube-solid');
+      const bottle = document.querySelector<HTMLElement>('.klein-bottle');
+      const layer = element.parentElement;
+      if (!solid || !layer) return;
+      type Vec = [number, number, number];
+      type Quat = [number, number, number, number]; // x y z w
+      const add = (a: Vec, b: Vec, k = 1): Vec => [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k];
+      const times = (a: Vec, k: number): Vec => [a[0] * k, a[1] * k, a[2] * k];
+      const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const cross = (a: Vec, b: Vec): Vec =>
+        [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+      const length = (a: Vec) => Math.hypot(a[0], a[1], a[2]);
+      const multiply = (a: Quat, b: Quat): Quat => [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+      ];
+      const conjugate = (q: Quat): Quat => [-q[0], -q[1], -q[2], q[3]];
+      const normalize = (q: Quat): Quat => {
+        const n = Math.hypot(q[0], q[1], q[2], q[3]);
+        return [q[0] / n, q[1] / n, q[2] / n, q[3] / n];
+      };
+      // The rotation about a vector's direction by its length, and back.
+      const exp = (v: Vec): Quat => {
+        const angle = length(v);
+        if (angle < 1e-9) return [0, 0, 0, 1];
+        const s = Math.sin(angle / 2) / angle;
+        return [v[0] * s, v[1] * s, v[2] * s, Math.cos(angle / 2)];
+      };
+      const log = (q: Quat): Vec => {
+        const sign = q[3] < 0 ? -1 : 1;
+        const s = Math.hypot(q[0], q[1], q[2]);
+        if (s < 1e-9) return [0, 0, 0];
+        const k = sign * 2 * Math.atan2(s, q[3] * sign) / s;
+        return [q[0] * k, q[1] * k, q[2] * k];
+      };
+      const matrix = ([x, y, z, w]: Quat) => [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+      ];
+      const rotate = (m: number[][], v: Vec): Vec => [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+      ];
+      const unrotate = (m: number[][], v: Vec): Vec => [
+        m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2],
+        m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2],
+        m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2],
+      ];
+      const turn = (axis: Vec, degrees: number) => exp(times(axis, degrees * Math.PI / 180));
+
+      const state = states.get(element)!;
+      const HALF = 42; // px, half an edge before scaling
+      const DEPTH = 800; // px, the stylesheet's perspective
+      const GRAVITY = 1600; // px/s²
+      const half = () => HALF * state.scale;
+      // Mass 1, so a cube's inertia about its centre, the same about any axis.
+      const inertia = () => (2 / 3) * half() * half();
+      // Half the cube's width or height on screen, from its rotation.
+      const extent = (m: number[][], axis: number) =>
+        half() * (Math.abs(m[axis][0]) + Math.abs(m[axis][1]) + Math.abs(m[axis][2]));
+      const DOWN: Vec = [0, 1, 0];
+      const AXES: Vec[] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+      let q: Quat = multiply(turn([1, 0, 0], -24), turn([0, 1, 0], -38)); // as the stylesheet poses it
+      let centre: Vec = [0, 0, 0];
+      let v: Vec = [0, 0, 0];
+      let omega: Vec = [0, 0, 0]; // rad/s about world axes
+      let awake = false; // set loose from where it hovers
+      let landed = false;
+      let shattered = false;
+      let frame = 0;
+      let previous = 0;
+      // point: the held spot in body px. target: the pointer, in page px.
+      let grip: { id: number; point: Vec; target: Vec; from: Vec } | null = null;
+
+      const visualCentre = (): Vec => {
+        const rect = element.getBoundingClientRect();
+        return [rect.left + rect.width / 2 + window.scrollX, rect.top + rect.height / 2 + window.scrollY, 0];
+      };
+      const sync = () => { centre = visualCentre(); };
+      const draw = () => {
+        const at = visualCentre();
+        state.x += centre[0] - at[0];
+        state.y += centre[1] - at[1];
         apply(element);
-        const bottleRect = bottle.getBoundingClientRect();
-        const bottlePageTop = bottleRect.top + window.scrollY;
-        const floorPage = pageBottom();
-        const shatter = () => {
+        const m = matrix(q);
+        solid.style.transform = `matrix3d(${m[0][0]}, ${m[1][0]}, ${m[2][0]}, 0, `
+          + `${m[0][1]}, ${m[1][1]}, ${m[2][1]}, 0, ${m[0][2]}, ${m[1][2]}, ${m[2][2]}, 0, 0, 0, 0, 1)`;
+      };
+      // The floor layer clips at the screen's edges, so they are the walls.
+      const bounds = () => {
+        const rect = layer.getBoundingClientRect();
+        return {
+          left: rect.left + window.scrollX, right: rect.right + window.scrollX,
+          floor: rect.bottom + window.scrollY - 6,
+        };
+      };
+      // The point of the cube's surface under a page position, in body px:
+      // a ray from the eye through the screen, into the box.
+      function surfacePoint(page: Vec, m: number[][]): Vec {
+        const sx = (page[0] - centre[0]) / state.scale;
+        const sy = (page[1] - centre[1]) / state.scale;
+        const origin = unrotate(m, [0, 0, DEPTH]);
+        const direction = unrotate(m, [sx, sy, -DEPTH]);
+        let near = -Infinity, far = Infinity;
+        for (let axis = 0; axis < 3; axis++) {
+          if (Math.abs(direction[axis]) < 1e-9) {
+            if (Math.abs(origin[axis]) > HALF) near = Infinity;
+            continue;
+          }
+          const t0 = (-HALF - origin[axis]) / direction[axis];
+          const t1 = (HALF - origin[axis]) / direction[axis];
+          near = Math.max(near, Math.min(t0, t1));
+          far = Math.min(far, Math.max(t0, t1));
+        }
+        if (near <= far && near > 0) return add(origin, direction, near);
+        // Pressed inside the box but beside the cube: hold its nearest point.
+        const flat = unrotate(m, [sx, sy, 0]);
+        return [
+          Math.max(-HALF, Math.min(HALF, flat[0])),
+          Math.max(-HALF, Math.min(HALF, flat[1])),
+          Math.max(-HALF, Math.min(HALF, flat[2])),
+        ];
+      }
+      // Move a point of the cube by `shift`, sharing the move between
+      // sliding the cube and turning it as a real push at that point would.
+      function push(offset: Vec, shift: Vec) {
+        const distance = length(shift);
+        if (distance < 1e-6) return;
+        const n = times(shift, 1 / distance);
+        const lever = cross(offset, n);
+        const amount = distance / (1 + dot(lever, lever) / inertia());
+        centre = add(centre, n, amount);
+        q = normalize(multiply(exp(times(lever, amount / inertia())), q));
+      }
+
+      function shatter(bottleRect: DOMRect, floor: number) {
+        if (!bottle) return;
         // Break the actual bottle photograph into triangular glass fragments.
         bottle.style.opacity = '0';
         bottle.style.pointerEvents = 'none';
+        const bottlePageTop = bottleRect.top + window.scrollY;
         for (let row = 0; row < 4; row++) {
           for (let column = 0; column < 3; column++) {
             for (let half = 0; half < 2; half++) {
@@ -385,93 +521,173 @@
                 transformOrigin: `${(x0 + x1) / 2}% ${(y0 + y1) / 2}%`,
               });
               // Beside the cube, inside the layer that clips at the screen's edge.
-              (element.parentElement ?? document.body).append(shard);
+              layer.append(shard);
               const spread = (Math.random() - 0.35) * 210;
-              const floor = floorPage - window.scrollY - bottleRect.top - bottleRect.height * (y0 + y1) / 200 - 12;
+              const drop = floor - bottlePageTop - bottleRect.height * (y0 + y1) / 200 - 6;
               shard.animate([
                 { translate: '0px 0px', rotate: '0deg' },
                 { translate: `${spread * 0.5}px -${20 + Math.random() * 50}px`, rotate: `${spread}deg`, offset: 0.35 },
-                { translate: `${spread}px ${floor}px`, rotate: `${spread * 2}deg` },
+                { translate: `${spread}px ${drop}px`, rotate: `${spread * 2}deg` },
               ], { duration: 650 + Math.random() * 250, easing: 'ease-in', fill: 'forwards' });
             }
           }
         }
+      }
 
-        };
-        let shattered = false;
-        let vy = 0;
-        let pitch = -24, roll = 0;
-        let pitchVelocity = 2, rollVelocity = 3;
-        let targetPitch = 0, targetRoll = 0;
-        let landed = false;
-        let previous = performance.now();
-        let accumulator = 0;
-        const dt = 1 / 120;
-        const radians = Math.PI / 180;
-        const half = 42 * state.scale;
-        // Vertical support of a rotated box from the second row of Rx Ry Rz.
-        const support = () => {
-          const sx = Math.sin(pitch * radians), cx = Math.cos(pitch * radians);
-          const sz = Math.sin(roll * radians), cz = Math.cos(roll * radians);
-          const sy = Math.sin(-38 * radians), cy = Math.cos(-38 * radians);
-          return half * (Math.abs(cx * sz + sx * sy * cz)
-            + Math.abs(cx * cz - sx * sy * sz) + Math.abs(sx * cy));
-        };
-        const tick = (now: number) => {
-          if (active && selected === element) { engage(element, 'motion', false); return; }
-          accumulator += Math.min((now - previous) / 1000, 0.05);
-          previous = now;
-          const rect = element.getBoundingClientRect();
-          const initialY = rect.top + rect.height / 2;
-          let y = initialY;
-          while (accumulator >= dt) {
-            // No air resistance: acceleration stays constant in free fall.
-            vy += 1600 * dt;
-            y += vy * dt;
-            if (landed) {
-              pitchVelocity += (-85 * (pitch - targetPitch) - 15 * pitchVelocity) * dt;
-              rollVelocity += (-85 * (roll - targetRoll) - 15 * rollVelocity) * dt;
+      const step = (now: number) => {
+        frame = 0;
+        if (editing || !shown(element)) { engage(element, 'motion', false); return; }
+        const elapsed = Math.min((now - previous) / 1000, 0.05);
+        previous = now;
+        const substeps = Math.max(1, Math.ceil(elapsed * 240));
+        const dt = elapsed / substeps;
+        const { left, right, floor } = bounds();
+        let tilt: Vec = [0, 0, 0];
+        for (let i = 1; i <= substeps; i++) {
+          const before = centre, beforeQ = q;
+          const vx = v[0], vy = v[1] + GRAVITY * dt;
+          v = [vx, vy, 0];
+          centre = add(centre, v, dt);
+          q = normalize(multiply(exp(times(omega, dt)), q));
+          let m = matrix(q);
+          if (grip) {
+            // The held point stays under the pointer. On screen a point
+            // nearer the viewer sits further from the centre, so measure the
+            // miss on screen and shrink it back to the point's depth.
+            const offset = times(rotate(m, grip.point), state.scale);
+            const depth = DEPTH * state.scale;
+            const magnify = depth / (depth - offset[2]);
+            const target = add(grip.from, add(grip.target, grip.from, -1), i / substeps);
+            push(offset, [
+              (target[0] - centre[0] - offset[0] * magnify) / magnify,
+              (target[1] - centre[1] - offset[1] * magnify) / magnify,
+              0,
+            ]);
+            m = matrix(q);
+          }
+          let contact = false;
+          if (grip) {
+            // The lowest corner can't pass the floor; lifting it there tips
+            // the cube as well.
+            let lowest: Vec = [0, 0, 0];
+            for (const corner of [[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1], [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1]] as Vec[]) {
+              const offset = times(rotate(m, corner), half());
+              if (offset[1] > lowest[1]) lowest = offset;
             }
-            pitch += pitchVelocity * dt;
-            roll += rollVelocity * dt;
-            const extent = support();
-            if (!shattered && y + extent >= bottlePageTop - window.scrollY + bottleRect.height * 0.16) {
+            const sunk = centre[1] + lowest[1] - floor;
+            if (sunk > 0) { push(lowest, [0, -sunk, 0]); m = matrix(q); contact = true; }
+          } else {
+            const below = extent(m, 1);
+            if (centre[1] + below > floor) { centre[1] = floor - below; contact = true; }
+          }
+          const wide = extent(m, 0) + 3;
+          let wall = 0;
+          if (centre[0] - wide < left) { centre[0] = left + wide; wall = -1; }
+          if (centre[0] + wide > right) { centre[0] = right - wide; wall = 1; }
+
+          v = times(add(centre, before, -1), 1 / dt);
+          omega = times(log(multiply(q, conjugate(beforeQ))), 1 / dt);
+          // A throw can reach the top of the screen, not leave for seconds.
+          const speed = length(v);
+          if (speed > 2000) v = times(v, 2000 / speed);
+          const spin = length(omega);
+          if (spin > 30) omega = times(omega, 30 / spin);
+          if (wall && Math.sign(vx) === wall) v[0] = -vx * 0.4;
+          if (contact && !grip) {
+            v[1] = vy > 60 ? -vy * 0.18 : 0;
+            v[0] -= Math.sign(v[0]) * Math.min(Math.abs(v[0]), 1500 * dt);
+            landed = true;
+          }
+          if (landed && !grip) {
+            // Once it has touched down it tips onto whichever face is
+            // nearest the floor, as a damped spring toward that pose.
+            let nearest: Vec = DOWN, best = -Infinity;
+            for (const axis of AXES) {
+              const world = rotate(m, axis);
+              if (world[1] > best) { best = world[1]; nearest = world; }
+            }
+            const axis = cross(nearest, DOWN);
+            const sine = length(axis);
+            tilt = sine > 1e-9 ? times(axis, Math.atan2(sine, nearest[1]) / sine) : [0, 0, 0];
+            omega = add(add(omega, tilt, 85 * dt), omega, -15 * dt);
+          }
+          // A hand steadies what it holds; the air barely slows a tumble.
+          const drag = grip ? 2 : 0.2;
+          omega = times(omega, Math.max(0, 1 - drag * dt));
+          if (grip) v = times(v, Math.max(0, 1 - drag * dt));
+
+          if (!shattered && bottle && shown(bottle)) {
+            const rect = bottle.getBoundingClientRect();
+            const bottleX = rect.left + rect.width / 2 + window.scrollX;
+            const bottleTop = rect.top + window.scrollY + rect.height * 0.16;
+            if (Math.abs(centre[0] - bottleX) < rect.width * 0.3 + wide * 0.6
+              && centre[1] + extent(m, 1) >= bottleTop && centre[1] - extent(m, 1) < rect.bottom + window.scrollY) {
               shattered = true;
-              shatter();
-              vy *= 0.8;
-              pitchVelocity += 1;
-              rollVelocity += 2;
+              shatter(rect, floor);
+              if (!grip) { v[1] *= 0.8; omega = add(omega, [0.5, 0.3, 1]); }
             }
-            const floor = floorPage - window.scrollY - 6 - extent;
-            if (y >= floor) {
-              y = floor;
-              if (!landed) {
-                landed = true;
-                // These orientations put an entire face on the ground.
-                targetPitch = Math.round(pitch / 180) * 180;
-                targetRoll = Math.round(roll / 90) * 90;
-              }
-              vy = vy > 60 ? -vy * 0.18 : 0;
-            }
-            accumulator -= dt;
           }
-          state.y += y - initialY;
-          apply(element);
-          solid.style.transform = `rotateX(${pitch}deg) rotateY(-38deg) rotateZ(${roll}deg)`;
-          if (landed && Math.abs(vy) < 1 && Math.abs(pitch - targetPitch) < 0.05
-            && Math.abs(roll - targetRoll) < 0.05 && Math.abs(pitchVelocity) + Math.abs(rollVelocity) < 0.1) {
-            solid.style.transform = `rotateX(${targetPitch}deg) rotateY(-38deg) rotateZ(${targetRoll}deg)`;
-            state.y += floorPage - window.scrollY - 6 - half - y;
-            apply(element);
-            engage(element, 'motion', false);
-            return;
-          }
-          requestAnimationFrame(tick);
-        };
-        requestAnimationFrame(tick);
+        }
+        if (landed && !grip && length(v) < 2 && length(omega) < 0.02 && length(tilt) < 0.002) {
+          q = normalize(multiply(exp(tilt), q));
+          centre[1] = floor - half();
+          draw();
+          engage(element, 'motion', false);
+          return;
+        }
+        draw();
+        if (grip) grip.from = grip.target;
+        frame = requestAnimationFrame(step);
       };
-      element.addEventListener('pointerenter', drop);
-      element.addEventListener('focus', drop);
+      const run = () => {
+        if (frame) return;
+        engage(element, 'motion', true);
+        previous = performance.now();
+        frame = requestAnimationFrame(step);
+      };
+      const wake = () => {
+        if (awake || editing || active || reducedMotion.matches || !shown(element)) return;
+        awake = true;
+        sync();
+        omega = [0.035, 0, 0.05];
+        run();
+      };
+      const letGo = (event: PointerEvent) => {
+        if (!grip || event.pointerId !== grip.id) return;
+        grip = null;
+        element.classList.remove('held');
+        engage(element, 'drag', false);
+      };
+      element.addEventListener('pointerenter', wake);
+      element.addEventListener('focus', wake);
+      element.addEventListener('pointerdown', event => {
+        if (editing || active || grip || event.button !== 0 || reducedMotion.matches || !shown(element)) return;
+        event.preventDefault();
+        if (!frame) sync();
+        awake = true;
+        landed = false;
+        const at: Vec = [event.clientX + window.scrollX, event.clientY + window.scrollY, 0];
+        grip = { id: event.pointerId, point: surfacePoint(at, matrix(q)), target: at, from: at };
+        try { element.setPointerCapture(event.pointerId); } catch { /* synthetic pointer */ }
+        element.classList.add('held');
+        engage(element, 'drag', true);
+        run();
+      });
+      element.addEventListener('pointermove', event => {
+        if (grip && event.pointerId === grip.id) {
+          grip.target = [event.clientX + window.scrollX, event.clientY + window.scrollY, 0];
+        }
+      });
+      element.addEventListener('pointerup', letGo);
+      element.addEventListener('pointercancel', letGo);
+      element.addEventListener('lostpointercapture', letGo);
+      // After the layout moves or arranging ends, fall back to the floor.
+      const resettle = () => {
+        if (editing && grip) letGo({ pointerId: grip.id } as PointerEvent);
+        if (!editing && awake && !frame && shown(element)) { sync(); landed = false; run(); }
+      };
+      window.addEventListener('resize', resettle);
+      editingWatchers.push(resettle);
       return;
     }
 
@@ -656,6 +872,7 @@
   function toggleEditing() {
     editing = !editing;
     document.documentElement.classList.toggle('arranging', editing);
+    editingWatchers.forEach(watch => watch());
     if (editing) {
       showHint(`Arranging the ${layoutName()} layout: drag to move, pull the corner to resize, double-click it to reset. Press S to copy where everything is and finish.`);
       return;
@@ -692,6 +909,9 @@
   .arranging .arrangeable-image { z-index: 2; }
   .arranging .arrangeable-image { cursor: grab; touch-action: none; }
   .arranging .arrangeable-image:active { cursor: grabbing; }
+  /* The cube can be picked up at any time. */
+  .cube.arrangeable-image { cursor: grab; touch-action: none; }
+  .cube.arrangeable-image.held { cursor: grabbing; }
   /* The ball's box is its circle, so a round hit area keeps touches in the
      corners from grabbing it. */
   .rubber-band-ball.arrangeable-image { pointer-events: none !important; touch-action: none; }
