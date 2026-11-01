@@ -352,9 +352,11 @@
       // point of its surface they press, swings it about that point and
       // throws it. Positions are page pixels in CSS's frame (x right, y down,
       // z toward the viewer); the orientation is a quaternion. Each step
-      // moves the cube freely, then corrects positions so the held point
-      // stays under the pointer and nothing passes the floor or walls, and
-      // reads the velocities back off the corrected positions.
+      // moves the cube freely, then corrects positions so a hand of limited
+      // strength hauls the held point toward the pointer and nothing passes
+      // the floor or walls, and reads the velocities back off the corrected
+      // positions. It is solid tungsten: gravity treats it like anything else,
+      // but a hand accelerates it slowly and collisions barely deflect it.
       const solid = element.querySelector<HTMLElement>('.cube-solid');
       const bottle = document.querySelector<HTMLElement>('.klein-bottle');
       const layer = element.parentElement;
@@ -413,8 +415,16 @@
       const HALF = 42; // px, half an edge before scaling
       const DEPTH = 800; // px, the stylesheet's perspective
       const GRAVITY = 1600; // px/s²
+      const HAND_RATE = 12; // 1/s, how quickly the hand closes on the pointer
+      const HAND_PULL = 4000; // px/s², the most the hand can accelerate the held point
+      const MAX_SPEED = 1500; // px/s, the hardest throw an arm manages
+      const MAX_SPIN = 12; // rad/s
+      const GROUND_FRICTION = 5500; // px/s², how hard the floor stops a skid
+      const HELD_FRICTION = 1500; // px/s², less than HAND_PULL so it can be dragged along the floor
+      const GROUND_GAP = 12; // px, near enough the floor to be dragging on it while it tips
       const half = () => HALF * state.scale;
-      // Mass 1, so a cube's inertia about its centre, the same about any axis.
+      // Per unit mass: a cube's inertia about its centre, the same about any
+      // axis. Its weight shows in HAND_PULL, the force over this mass.
       const inertia = () => (2 / 3) * half() * half();
       // Half the cube's width or height on screen, from its rotation.
       const extent = (m: number[][], axis: number) =>
@@ -498,8 +508,8 @@
       function shatter(bottleRect: DOMRect, floor: number) {
         if (!bottle) return;
         // Break the actual bottle photograph into triangular glass fragments.
-        bottle.style.opacity = '0';
-        bottle.style.pointerEvents = 'none';
+        // Hidden, not just transparent: it mustn't catch the pointer over the cube.
+        bottle.style.visibility = 'hidden';
         const bottlePageTop = bottleRect.top + window.scrollY;
         for (let row = 0; row < 4; row++) {
           for (let column = 0; column < 3; column++) {
@@ -537,7 +547,7 @@
       const step = (now: number) => {
         frame = 0;
         if (editing || !shown(element)) { engage(element, 'motion', false); return; }
-        const elapsed = Math.min((now - previous) / 1000, 0.05);
+        const elapsed = Math.max(0.001, Math.min((now - previous) / 1000, 0.05));
         previous = now;
         const substeps = Math.max(1, Math.ceil(elapsed * 240));
         const dt = elapsed / substeps;
@@ -551,18 +561,25 @@
           q = normalize(multiply(exp(times(omega, dt)), q));
           let m = matrix(q);
           if (grip) {
-            // The held point stays under the pointer. On screen a point
+            // The hand pulls the held point toward the pointer as a critically
+            // damped spring, up to all the force it has. On screen a point
             // nearer the viewer sits further from the centre, so measure the
             // miss on screen and shrink it back to the point's depth.
             const offset = times(rotate(m, grip.point), state.scale);
             const depth = DEPTH * state.scale;
             const magnify = depth / (depth - offset[2]);
             const target = add(grip.from, add(grip.target, grip.from, -1), i / substeps);
-            push(offset, [
-              (target[0] - centre[0] - offset[0] * magnify) / magnify,
-              (target[1] - centre[1] - offset[1] * magnify) / magnify,
+            const targetV = times(add(grip.target, grip.from, -1), 1 / elapsed);
+            const pointV = add(v, cross(omega, offset));
+            const pull: Vec = [
+              HAND_RATE * HAND_RATE * (target[0] - centre[0] - offset[0] * magnify) / magnify
+                + 2 * HAND_RATE * (targetV[0] - pointV[0]),
+              HAND_RATE * HAND_RATE * (target[1] - centre[1] - offset[1] * magnify) / magnify
+                + 2 * HAND_RATE * (targetV[1] - pointV[1]),
               0,
-            ]);
+            ];
+            const effort = length(pull);
+            push(offset, times(pull, Math.min(1, HAND_PULL / Math.max(effort, 1e-9)) * dt * dt));
             m = matrix(q);
           }
           let contact = false;
@@ -570,12 +587,23 @@
             // The lowest corner can't pass the floor; lifting it there tips
             // the cube as well.
             let lowest: Vec = [0, 0, 0];
+            let lowestCorner: Vec = [0, 0, 0];
             for (const corner of [[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1], [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1]] as Vec[]) {
               const offset = times(rotate(m, corner), half());
-              if (offset[1] > lowest[1]) lowest = offset;
+              if (offset[1] > lowest[1]) { lowest = offset; lowestCorner = corner; }
             }
             const sunk = centre[1] + lowest[1] - floor;
-            if (sunk > 0) { push(lowest, [0, -sunk, 0]); m = matrix(q); contact = true; }
+            if (sunk > 0) {
+              push(lowest, [0, -sunk, 0]);
+              m = matrix(q);
+              contact = true;
+              // The floor drags on that corner, but the hand can overcome it.
+              const was = add(before, times(rotate(matrix(beforeQ), lowestCorner), half()));
+              const now = add(centre, times(rotate(m, lowestCorner), half()));
+              const most = HELD_FRICTION * dt * dt;
+              push(times(rotate(m, lowestCorner), half()), [-Math.max(-most, Math.min(most, now[0] - was[0])), 0, 0]);
+              m = matrix(q);
+            }
           } else {
             const below = extent(m, 1);
             if (centre[1] + below > floor) { centre[1] = floor - below; contact = true; }
@@ -589,14 +617,17 @@
           omega = times(log(multiply(q, conjugate(beforeQ))), 1 / dt);
           // A throw can reach the top of the screen, not leave for seconds.
           const speed = length(v);
-          if (speed > 2000) v = times(v, 2000 / speed);
+          if (speed > MAX_SPEED) v = times(v, MAX_SPEED / speed);
           const spin = length(omega);
-          if (spin > 30) omega = times(omega, 30 / spin);
-          if (wall && Math.sign(vx) === wall) v[0] = -vx * 0.4;
+          if (spin > MAX_SPIN) omega = times(omega, MAX_SPIN / spin);
+          if (wall && Math.sign(vx) === wall) v[0] = -vx * 0.2;
           if (contact && !grip) {
-            v[1] = vy > 60 ? -vy * 0.18 : 0;
-            v[0] -= Math.sign(v[0]) * Math.min(Math.abs(v[0]), 1500 * dt);
+            v[1] = vy > 140 ? -vy * 0.08 : 0; // a thud, hardly a bounce
             landed = true;
+          }
+          // Friction lasts while it tips onto a face, when it hardly presses down.
+          if (landed && !grip && centre[1] + extent(m, 1) >= floor - GROUND_GAP) {
+            v[0] -= Math.sign(v[0]) * Math.min(Math.abs(v[0]), GROUND_FRICTION * dt);
           }
           if (landed && !grip) {
             // Once it has touched down it tips onto whichever face is
@@ -611,8 +642,8 @@
             tilt = sine > 1e-9 ? times(axis, Math.atan2(sine, nearest[1]) / sine) : [0, 0, 0];
             omega = add(add(omega, tilt, 85 * dt), omega, -15 * dt);
           }
-          // A hand steadies what it holds; the air barely slows a tumble.
-          const drag = grip ? 2 : 0.2;
+          // A hand steadies what it holds, slowly; the air hardly matters.
+          const drag = grip ? 1.2 : 0.05;
           omega = times(omega, Math.max(0, 1 - drag * dt));
           if (grip) v = times(v, Math.max(0, 1 - drag * dt));
 
@@ -624,7 +655,8 @@
               && centre[1] + extent(m, 1) >= bottleTop && centre[1] - extent(m, 1) < rect.bottom + window.scrollY) {
               shattered = true;
               shatter(rect, floor);
-              if (!grip) { v[1] *= 0.8; omega = add(omega, [0.5, 0.3, 1]); }
+              // Glass hardly slows it down.
+              if (!grip) { v[1] *= 0.96; omega = add(omega, [0.1, 0.06, 0.2]); }
             }
           }
         }
